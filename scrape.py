@@ -1,5 +1,8 @@
 import asyncio
 from pyppeteer import launch
+from pyppeteer.errors import NetworkError
+import pandas as pd
+import os
 
 async def scrape_page(url):
     browser = await launch(headless=False)
@@ -14,65 +17,92 @@ async def scrape_page(url):
     await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnPoisciPodjetja").click()')
 
     current_page = 1
-    has_next_page = True
+    results = []
 
-    while has_next_page:
-        print(f'Page {current_page}')
+    try:
+        while True:
+            print(f'Page {current_page}')
 
-        await page.waitForSelector('.b-search-results .b-table .b-table-row .b-table-cell-title a.b-link-company')
-        search_result_items = await page.querySelectorAll('.b-search-results .b-table .b-table-row .b-table-cell-title a.b-link-company')
+            await page.waitForSelector('.b-table-cell-title a.b-link-company')
+            search_result_items = await page.evaluate('''() => {
+                const results = [];
+                const items = document.querySelectorAll('.b-table-row .b-table-cell-title a.b-link-company, .b-table-cell-title div.b-link-company');
+                for (let i = 0; i < items.length; i++) {
+                    const item = items[i];
+                    const href = item.href;
+                    results.push(href);
+                }
+                return results;
+            }''')
 
-        for item in search_result_items:
-            item_text = await page.evaluate('(element) => element.textContent', item)
-            print('Search Result Item:', item_text)
+            for href in search_result_items:
+                # Open the search result in a new tab
+                new_page = await browser.newPage()
+                await new_page.evaluateOnNewDocument('window.open = function() {};')
+                await new_page.goto(href)
 
-            # Click on the search result
-            await item.click()
-            await page.waitForNavigation(timeout=20000)  # Set a timeout of 20 seconds for navigation
+                # Extract information from the loaded website
+                title = await new_page.evaluate('document.querySelector(".col.b-title h1").textContent.trim()')
+                address = await new_page.evaluate('document.querySelector(".b-box-body .i-ostalo-lokacija").textContent.trim()')
+                phone_number = await new_page.evaluate('document.querySelector(".b-box-body .i-ostalo-telefon").textContent.trim()')
+                website = await new_page.evaluate('document.querySelector(".b-box-body a.i-ostalo-link").textContent.trim()')
+                email = await new_page.evaluate('document.querySelector(".b-box-body .i-orodja-ovojnice").getAttribute("href").replace("mailto:", "")')
+                number_of_employees = await new_page.evaluate('document.querySelector(".b-attr-group-list .b-attr-group:nth-child(4) .b-attr-value").textContent.trim()')
+                tsmedia_activity = await new_page.evaluate('document.querySelector(".b-attr-group-list .b-attr-group:nth-child(6) .b-attr-value").textContent.trim()')
 
-            # Extract information from the loaded website
-            title = await page.evaluate('document.querySelector(".col.b-title h1").textContent.trim()')
-            address = await page.evaluate('document.querySelector(".b-box-body .i-ostalo-lokacija").textContent.trim()')
-            phone_number = await page.evaluate('document.querySelector(".b-box-body .i-ostalo-telefon").textContent.trim()')
-            website = await page.evaluate('document.querySelector(".b-box-body a.i-ostalo-link").textContent.trim()')
-            email = await page.evaluate('document.querySelector(".b-box-body .i-orodja-ovojnice").getAttribute("href").replace("mailto:", "")')
-            number_of_employees = await page.evaluate('document.querySelector(".b-attr-group-list .b-attr-group:nth-child(4) .b-attr-value").textContent.trim()')
-            tsmedia_activity = await page.evaluate('document.querySelector(".b-attr-group-list .b-attr-group:nth-child(6) .b-attr-value").textContent.trim()')
+                result = {
+                    'Title': title,
+                    'Address': address,
+                    'Phone Number': phone_number,
+                    'Website': website,
+                    'Email': email,
+                    'Number of Employees': number_of_employees,
+                    'TS Media Activity': tsmedia_activity
+                }
 
-            print('Title:', title)
-            print('Address:', address)
-            print('Phone Number:', phone_number)
-            print('Website:', website)
-            print('Email:', email)
-            print('Number of Employees:', number_of_employees)
-            print('TS Media Activity:', tsmedia_activity)
+                results.append(result)
 
-            # Go back to the search results page
-            await page.goBack()
-            await page.waitForNavigation(timeout=20000)  # Set a timeout of 20 seconds for navigation
-            await asyncio.sleep(2)
+                # Close the new tab
+                await new_page.close()
 
-        # Check if there is a next page
-        has_next_page = await page.evaluate('''() => {
-            const nextPageButton = document.querySelector('.b-search-pager a.b-page-link:not(.aspNetDisabled)');
-            if (nextPageButton) {
-                nextPageButton.click();
-                return true;
-            }
-            return false;
-        }''')
+                # Go back to the search results page
+                try:
+                    await page.bringToFront()
+                except NetworkError:
+                    pass
 
-        current_page += 1
-        if has_next_page:
-            # Reload the search results page
-            await page.reload()
-            await page.waitForNavigation(timeout=20000)  # Set a timeout of 20 seconds for navigation
-            await asyncio.sleep(2)
+            # Check if there is a next page
+            next_page_button = await page.querySelector('#ctl00_cphMain_ResultsPager_repPager_ctl01_btnPage')
+            if next_page_button is None:
+                break
 
-    # Close the browser
-    await browser.close()
+            current_page+= 1
+
+            # Click the next page button
+            await asyncio.sleep(3)  # Add a delay before navigating to the next page
+            await next_page_button.click()
+
+    except Exception as e:
+        print(f'Error occurred: {e}')
+
+    finally:
+        # Convert results to a DataFrame
+        df = pd.DataFrame(results)
+
+        # Save DataFrame to Excel
+        df.to_excel('scraped_data.xlsx', index=False)
+
+        # Close the browser
+        await browser.close()
+
+        # Delete temporary user data directory
+        user_data_dir = browser.userDataDir
+        await browser.disconnect()
+        await browser.process.communicate()
+        await browser.close()
+        await asyncio.sleep(1)
+        if os.path.exists(user_data_dir):
+            os.remove(user_data_dir)
 
 url = 'https://www.bizi.si/iskanje/'
-
-# Run the scraping function
 asyncio.get_event_loop().run_until_complete(scrape_page(url))
