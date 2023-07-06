@@ -35,6 +35,8 @@ async def scrape_page(url):
                 return results;
             }''')
 
+            
+
             for href in search_result_items:
                 # Open the search result in a new tab
                 new_page = await browser.newPage()
@@ -71,12 +73,13 @@ async def scrape_page(url):
                 except NetworkError:
                     pass
 
-            # Check if there is a next page
-            next_page_button = await page.querySelector('#ctl00_cphMain_ResultsPager_repPager_ctl01_btnPage')
+                # Check if there is a next page
+            next_page_button = await page.querySelector('#divResultsPagerTop .b-page-link.b-active')
             if next_page_button is None:
                 break
 
-            current_page+= 1
+            # Get the next page button by finding the next sibling of the active page button
+            next_page_button = await page.evaluateHandle('(a) => a.nextElementSibling', next_page_button)
 
             # Click the next page button
             await asyncio.sleep(3)  # Add a delay before navigating to the next page
