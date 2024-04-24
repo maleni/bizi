@@ -5,6 +5,7 @@ import pandas as pd
 import os
 from pyppeteer import launch
 from pyppeteer.errors import NetworkError
+import time
 
 # Generate a random user agent string
 def generate_user_agent():
@@ -37,20 +38,47 @@ async def scrape_page(url):
         ],
     )
     page = await browser.newPage()
+    await page.setViewport({'width': 1200, 'height': 800})
 
     # Set user agent header
     user_agent = generate_user_agent()
     await page.setUserAgent(user_agent)
 
-    options = {"waitUntil": 'load', "timeout": 1000000}
+    options = {"waitUntil": 'load', "timeout": 10000}
     await page.goto(url, options=options)
 
     # Select the option with value "04" (5) in the <select> element
-    await page.select('#ctl00_cphMain_SearchAdvanced1_ddlStZaposlenihOd', '04')
+    await page.select('#ctl00_cphMain_SearchAdvanced1_ddlStZaposlenihDo', '05')
+
+    # Select the category of a company - Open the modal with button click
+    await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnDejavnosti").click()')
+
+
+    time.sleep(10)
+    # Enter <input> field and enter search term
+    # Wait for the input field to be available
+    await page.waitForSelector('#inputFilter', {'timeout': 10000})
+    
+    
+    # Ensure the container is loaded
+    
+    await page.click('#pnlDejavnostiTSmedia a[actionid="3520"]')
+
+
+
+    await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_ActivitiesAndProductsSearch1_btnApprove").click()')
+
+    await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnPoisciPodjetja").click()')
+
+
+
+
 
     # Click the search button
     await asyncio.sleep(30)  # Add a delay of 10 seconds
     await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnPoisciPodjetja").click()')
+
+    await page.waitForSelector('.b-table-cell-title a.b-link-company')
 
     current_page = 1
     results = []
@@ -110,6 +138,15 @@ async def scrape_page(url):
                     number_of_employees = ""
 
                 try:
+                    registration_date = await new_page.evaluate(
+                        '() => document.querySelector(".b-attr-group-list .b-attr-group:nth-child(5) .b-attr-value").textContent.trim()'
+                    )
+                except Exception as e:
+                    registration_date = ""
+                    print(f"Failed to fetch registration date: {str(e)}")
+
+
+                try:
                     tsmedia_activity = await new_page.evaluate('document.querySelector(".b-attr-group-list .b-attr-group:nth-child(6) .b-attr-value").textContent.trim()')
                 except Exception as e:
                     tsmedia_activity = ""
@@ -121,11 +158,19 @@ async def scrape_page(url):
                     'Website': website,
                     'Email': email,
                     'Number of Employees': number_of_employees,
+                    'Registration date': registration_date,
                     'TS Media Activity': tsmedia_activity
                 }
                 print(f'Result: {result}')
 
                 results.append(result)
+
+                # Optionally, save after processing each page:
+                df = pd.DataFrame(results)
+                df.to_excel(f'scraped_data_page_{current_page}.xlsx', index=False)  # Saves results after each page
+
+                # Navigation to next page code here...
+                current_page += 1
 
                 # Close the new tab
                 await new_page.close()
@@ -150,6 +195,8 @@ async def scrape_page(url):
             current_page += 1
             await next_page_button.click()
 
+
+
     except Exception as e:
         print(f'Error occurred: {e}')
 
@@ -165,13 +212,11 @@ async def scrape_page(url):
         await browser.close()
 
         # Delete temporary user data directory
-        user_data_dir = browser.userDataDir
+
         await browser.disconnect()
-        await browser.process.communicate()
         await browser.close()
         await asyncio.sleep(1)
-        if os.path.exists(user_data_dir):
-            os.remove(user_data_dir)
+
 
 
 url = 'https://www.bizi.si/iskanje/'
