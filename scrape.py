@@ -39,47 +39,33 @@ async def scrape_page(url):
     )
     page = await browser.newPage()
     await page.setViewport({'width': 1200, 'height': 800})
+    await page.setUserAgent(generate_user_agent())
 
-    # Set user agent header
-    user_agent = generate_user_agent()
-    await page.setUserAgent(user_agent)
-
-    options = {"waitUntil": 'load', "timeout": 10000}
-    await page.goto(url, options=options)
-
-    # Select the option with value "04" (5) in the <select> element
-    await page.select('#ctl00_cphMain_SearchAdvanced1_ddlStZaposlenihDo', '05')
-
-    # Select the category of a company - Open the modal with button click
+    await page.goto(url, options={"waitUntil": 'networkidle0', "timeout": 60000})
+    
+    # Ensure the element is available before interaction
+    try:
+        await page.waitForSelector('#ctl00_cphMain_SearchAdvanced1_ddlStZaposlenihDo', {'timeout': 10000})
+        await page.select('#ctl00_cphMain_SearchAdvanced1_ddlStZaposlenihDo', '05')
+    except TimeoutError:
+        print("Timeout while waiting for the dropdown. Check if the selector has changed.")
+        await browser.close()
+        return
+    
     await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnDejavnosti").click()')
+    await asyncio.sleep(10)  # Allow time for modal to appear and elements to be clickable
 
-
-    time.sleep(10)
-    # Enter <input> field and enter search term
-    # Wait for the input field to be available
-    await page.waitForSelector('#inputFilter', {'timeout': 10000})
+    try:
+        await page.waitForSelector('#inputFilter', {'timeout': 10000})
+        await page.click('#pnlDejavnostiTSmedia a[actionid="3520"]')
+        await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_ActivitiesAndProductsSearch1_btnApprove").click()')
+        await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnPoisciPodjetja").click()')
+        await asyncio.sleep(30)
+    except TimeoutError:
+        print("Failed to interact with company category selection elements.")
+        await browser.close()
+        return
     
-    
-    # Ensure the container is loaded
-    
-    await page.click('#pnlDejavnostiTSmedia a[actionid="3520"]')
-
-
-
-    await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_ActivitiesAndProductsSearch1_btnApprove").click()')
-
-    await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnPoisciPodjetja").click()')
-
-
-
-
-
-    # Click the search button
-    await asyncio.sleep(30)  # Add a delay of 10 seconds
-    await page.evaluate('document.getElementById("ctl00_cphMain_SearchAdvanced1_btnPoisciPodjetja").click()')
-
-    await page.waitForSelector('.b-table-cell-title a.b-link-company')
-
     current_page = 1
     results = []
 
@@ -164,22 +150,16 @@ async def scrape_page(url):
                 print(f'Result: {result}')
 
                 results.append(result)
-
-                # Optionally, save after processing each page:
-                df = pd.DataFrame(results)
-                df.to_excel(f'scraped_data_page_{current_page}.xlsx', index=False)  # Saves results after each page
-
-                # Navigation to next page code here...
-                current_page += 1
-
-                # Close the new tab
                 await new_page.close()
 
-                # Go back to the search results page
-                try:
-                    await page.bringToFront()
-                except NetworkError:
-                    pass
+            # Optionally, save after processing each page:
+            df = pd.DataFrame(results)
+            df.to_excel(f'scraped_data_page_{current_page}.xlsx', index=False)  # Saves results after each page
+
+            try:
+                await page.bringToFront()
+            except NetworkError:
+                pass    
 
             # Check if there is a next page
             await asyncio.sleep(35)
