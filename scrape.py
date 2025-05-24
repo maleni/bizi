@@ -219,7 +219,7 @@ class StealthScraper:
             
             context = await self.setup_stealth_context(browser)
             page = await context.new_page()
-            
+                
             # Set longer timeout for slow connections
             page.set_default_timeout(60000)
             
@@ -418,7 +418,7 @@ async def main():
     url = 'https://www.bizi.si/TSMEDIA/A/avtoservis-380/'
     
     # Limit to 3 pages for testing - remove max_pages parameter for full scrape
-    results = await scraper.scrape_page(url, max_pages=3)
+    results = await scraper.scrape_page(url)
     print(f"Scraping finished with {len(results)} total results")
 
 if __name__ == "__main__":
