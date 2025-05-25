@@ -208,46 +208,83 @@ class StealthScraper:
             print(f"Error extracting data from {url}: {e}")
             return None
     
-    async def scrape_page(self, url, max_pages=None):
+    async def scrape_page(self, url, start_page=1, max_pages=None):
         async with async_playwright() as p:
-            # Use different browsers randomly
             browser_type = random.choice([p.chromium, p.firefox])
-            browser = await browser_type.launch(
-                headless=False  # Set to True for production
-                # args removed for debugging
-            )
-            
+            browser = await browser_type.launch(headless=False)  # Set to True for production
             context = await self.setup_stealth_context(browser)
             page = await context.new_page()
-                
-            # Set longer timeout for slow connections
             page.set_default_timeout(60000)
             
             try:
                 print(f"Navigating to: {url}")
                 await page.goto(url, wait_until='domcontentloaded')
-                await self.random_delay(3, 6)  # Initial delay
+                await self.random_delay(3, 6)
                 
                 # Wait for company list
-                try:
-                    await page.wait_for_selector('.b-table-cell-title a.b-link-company', timeout=20000)
-                    print("Company list loaded successfully.")
-                except TimeoutError:
-                    print("Timeout waiting for company list")
-                    await page.screenshot(path='error_screenshot.png')
-                    return []
+                await page.wait_for_selector('.b-table-cell-title a.b-link-company', timeout=20000)
+                print("Company list loaded successfully.")
                 
                 current_page = 1
                 all_results = []
                 
+                # Helper function to find the next page link
+                async def find_next_page_link(page, current_page):
+                    next_page_num = current_page + 1
+                    next_page_selectors = [
+                        f'#ctl00_cphMain_ResultsPager_repPager a.b-page-link:has-text("{next_page_num}")',
+                        f'a.b-page-link:has-text("{next_page_num}")',
+                        f'a[href*="page={next_page_num}"]',
+                        f'a:has-text("{next_page_num}")'
+                    ]
+                    for selector in next_page_selectors:
+                        try:
+                            link = await page.query_selector(selector)
+                            if link:
+                                print(f"Found next page link with selector: {selector}")
+                                return link
+                        except:
+                            continue
+                    
+                    next_button_selectors = [
+                        'a.b-page-link:has-text(">")',
+                        'a:has-text("Next")',
+                        'a:has-text("Naprej")',
+                        '.pagination a:last-child',
+                        'a[title*="next"]',
+                        'a[title*="naprej"]'
+                    ]
+                    for selector in next_button_selectors:
+                        try:
+                            link = await page.query_selector(selector)
+                            if link:
+                                print(f"Found next button with selector: {selector}")
+                                return link
+                        except:
+                            continue
+                    return None
+                
+                # Navigate to the starting page
+                while current_page < start_page:
+                    next_page_link = await find_next_page_link(page, current_page)
+                    if not next_page_link:
+                        print(f"Cannot navigate to page {start_page} - next page link not found")
+                        await browser.close()
+                        return all_results
+                    print(f"Navigating to page {current_page + 1} to reach start_page {start_page}")
+                    await next_page_link.scroll_into_view_if_needed()
+                    await next_page_link.click()
+                    await page.wait_for_load_state('domcontentloaded', timeout=30000)
+                    await self.random_delay(3, 6)
+                    current_page += 1
+                
+                # Main scraping loop starting from start_page
                 while True:
                     if max_pages and current_page > max_pages:
                         print(f"Reached maximum pages limit: {max_pages}")
                         break
-                        
-                    print(f'Scraping page {current_page}...')
                     
-                    # Get company URLs from current page
+                    print(f'Scraping page {current_page}...')
                     company_urls = await page.evaluate('''() => {
                         const urls = [];
                         const links = document.querySelectorAll('.b-table-cell-title a.b-link-company');
@@ -256,147 +293,37 @@ class StealthScraper:
                         });
                         return urls;
                     }''')
-                    
                     print(f"Found {len(company_urls)} companies on page {current_page}")
-                    print(f"Extracted company URLs: {company_urls}")
                     
-                    # Process each company
                     for i, company_url in enumerate(company_urls):
-                        print(f"Processing company {i+1}/{len(company_urls)}: {company_url}")
-
-                        # Validate URL before navigation
                         if not (isinstance(company_url, str) and company_url.startswith("http")):
                             print(f"Skipping invalid URL: {company_url}")
                             continue
-                        
-                        # Create new tab for each company
                         company_page = await context.new_page()
                         company_data = await self.extract_company_data(company_page, company_url)
                         await company_page.close()
-                        
                         if company_data:
                             all_results.append(company_data)
                             print(f"Scraped: {company_data['Title']}")
-                        
-                        # Random delay between companies
                         await self.random_delay(2, 4)
                     
-                    # Save progress after each page
                     if all_results:
                         df = pd.DataFrame(all_results)
                         df.to_excel(f'scraped_data_page_{current_page}.xlsx', index=False)
                         print(f"Saved {len(all_results)} results so far")
                     
-                    # Check for next page with multiple strategies
-                    print("Looking for next page...")
-                    
-                    # Strategy 1: Look for specific page number
-                    next_page_num = current_page + 1
-                    next_page_selectors = [
-                        f'#ctl00_cphMain_ResultsPager_repPager a.b-page-link:has-text("{next_page_num}")',
-                        f'a.b-page-link:has-text("{next_page_num}")',
-                        f'a[href*="page={next_page_num}"]',
-                        f'a:has-text("{next_page_num}")'
-                    ]
-                    
-                    next_page_link = None
-                    for selector in next_page_selectors:
-                        try:
-                            next_page_link = await page.query_selector(selector)
-                            if next_page_link:
-                                print(f"Found next page link with selector: {selector}")
-                                break
-                        except:
-                            continue
-                    
-                    # Strategy 2: Look for "Next" button or arrow
-                    if not next_page_link:
-                        next_button_selectors = [
-                            'a.b-page-link:has-text(">")',
-                            'a:has-text("Next")',
-                            'a:has-text("Naprej")',  # Slovenian for "Next"
-                            '.pagination a:last-child',
-                            'a[title*="next"]',
-                            'a[title*="naprej"]'
-                        ]
-                        
-                        for selector in next_button_selectors:
-                            try:
-                                next_page_link = await page.query_selector(selector)
-                                if next_page_link:
-                                    print(f"Found next button with selector: {selector}")
-                                    break
-                            except:
-                                continue
-                    
-                    # Strategy 3: Debug pagination structure
-                    if not next_page_link:
-                        print("Debugging pagination structure...")
-                        pagination_info = await page.evaluate('''() => {
-                            const pagination = document.querySelector('#ctl00_cphMain_ResultsPager_repPager') || 
-                                              document.querySelector('.pagination') ||
-                                              document.querySelector('[class*="pager"]');
-                            
-                            if (pagination) {
-                                const links = pagination.querySelectorAll('a');
-                                const linkInfo = Array.from(links).map(link => ({
-                                    text: link.textContent.trim(),
-                                    href: link.href,
-                                    className: link.className
-                                }));
-                                return {
-                                    found: true,
-                                    innerHTML: pagination.innerHTML,
-                                    links: linkInfo
-                                };
-                            }
-                            return { found: false };
-                        }''')
-                        
-                        print(f"Pagination debug info: {pagination_info}")
-                        
-                        # Try to find any link that might be next page
-                        if pagination_info.get('found'):
-                            potential_next = await page.evaluate(f'''() => {{
-                                const links = document.querySelectorAll('#ctl00_cphMain_ResultsPager_repPager a, .pagination a, [class*="pager"] a');
-                                for (let link of links) {{
-                                    const text = link.textContent.trim();
-                                    if (text === "{next_page_num}" || text === ">" || text.toLowerCase().includes("next") || text.toLowerCase().includes("naprej")) {{
-                                        return {{ text: text, href: link.href, found: true }};
-                                    }}
-                                }}
-                                return {{ found: false }};
-                            }}''')
-                            
-                            if potential_next.get('found'):
-                                next_page_link = await page.query_selector(f'a[href="{potential_next["href"]}"]')
-                                print(f"Found potential next page: {potential_next}")
-                    
+                    next_page_link = await find_next_page_link(page, current_page)
                     if not next_page_link:
                         print("No more pages found - pagination exhausted")
                         break
                     
                     print(f"Navigating to page {current_page + 1}...")
-                    
-                    # Click with better error handling
-                    try:
-                        await next_page_link.scroll_into_view_if_needed()
-                        await self.random_delay(1, 2)
-                        await next_page_link.click()
-                        await page.wait_for_load_state('domcontentloaded', timeout=30000)
-                        await self.random_delay(3, 6)
-                        
-                        # Verify we actually moved to next page
-                        new_url = page.url
-                        print(f"New URL after navigation: {new_url}")
-                        
-                    except Exception as e:
-                        print(f"Error clicking next page: {e}")
-                        break
-                    
+                    await next_page_link.scroll_into_view_if_needed()
+                    await next_page_link.click()
+                    await page.wait_for_load_state('domcontentloaded', timeout=30000)
+                    await self.random_delay(3, 6)
                     current_page += 1
                 
-                # Save final results
                 if all_results:
                     df = pd.DataFrame(all_results)
                     df.to_excel('final_scraped_data.xlsx', index=False)
@@ -416,9 +343,7 @@ class StealthScraper:
 async def main():
     scraper = StealthScraper()
     url = 'https://www.bizi.si/TSMEDIA/A/avtoservis-380/'
-    
-    # Limit to 3 pages for testing - remove max_pages parameter for full scrape
-    results = await scraper.scrape_page(url)
+    results = await scraper.scrape_page(url, start_page=35)  # Start from page 35
     print(f"Scraping finished with {len(results)} total results")
 
 if __name__ == "__main__":
