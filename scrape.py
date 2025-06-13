@@ -16,6 +16,39 @@ class StealthScraper:
         
     def get_random_user_agent(self):
         return random.choice(self.user_agents)
+
+    async def handle_cookie_popup(self, page):
+        """
+        Detect and dismiss the Didomi cookie popup if present.
+        Tries to click the 'Sprejmi vse' (Accept all) or close button.
+        """
+        try:
+            # Wait for the popup to appear (short timeout)
+            popup_selector = '#didomi-popup'
+            accept_btn_selectors = [
+                'button.didomi-continue-without-agreeing',  # Sometimes present
+                'button.didomi-accept-all-button',          # Most common
+                'button[aria-label*="Sprejmi"]',            # Slovenian
+                'button:has-text("Sprejmi vse")',
+                'button:has-text("Sprejmi")',
+                'button:has-text("Accept all")',
+                'button:has-text("Agree")',
+                '.didomi-popup__button'                     # Fallback
+            ]
+            popup = await page.query_selector(popup_selector)
+            if popup:
+                for btn_selector in accept_btn_selectors:
+                    try:
+                        btn = await page.query_selector(btn_selector)
+                        if btn:
+                            await btn.click()
+                            print("Cookie popup dismissed.")
+                            await asyncio.sleep(1)
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
     
     def get_random_viewport(self):
         viewports = [
@@ -220,6 +253,9 @@ class StealthScraper:
                 print(f"Navigating to: {url}")
                 await page.goto(url, wait_until='domcontentloaded')
                 await self.random_delay(3, 6)
+
+                # Handle cookie popup if present
+                await self.handle_cookie_popup(page)
                 
                 # Wait for company list
                 await page.wait_for_selector('.b-table-cell-title a.b-link-company', timeout=20000)
@@ -276,6 +312,8 @@ class StealthScraper:
                     await next_page_link.click()
                     await page.wait_for_load_state('domcontentloaded', timeout=30000)
                     await self.random_delay(3, 6)
+                    # Handle cookie popup if it reappears
+                    await self.handle_cookie_popup(page)
                     current_page += 1
                 
                 # Main scraping loop starting from start_page
@@ -294,7 +332,12 @@ class StealthScraper:
                         return urls;
                     }''')
                     print(f"Found {len(company_urls)} companies on page {current_page}")
-                    
+
+                    # If no companies found, stop scraping (end of real results)
+                    if len(company_urls) == 0:
+                        print("No companies found on this page. Stopping pagination.")
+                        break
+
                     for i, company_url in enumerate(company_urls):
                         if not (isinstance(company_url, str) and company_url.startswith("http")):
                             print(f"Skipping invalid URL: {company_url}")
@@ -306,12 +349,12 @@ class StealthScraper:
                             all_results.append(company_data)
                             print(f"Scraped: {company_data['Title']}")
                         await self.random_delay(2, 4)
-                    
+
                     if all_results:
                         df = pd.DataFrame(all_results)
                         df.to_excel(f'scraped_data_page_{current_page}.xlsx', index=False)
                         print(f"Saved {len(all_results)} results so far")
-                    
+
                     next_page_link = await find_next_page_link(page, current_page)
                     if not next_page_link:
                         print("No more pages found - pagination exhausted")
@@ -322,6 +365,8 @@ class StealthScraper:
                     await next_page_link.click()
                     await page.wait_for_load_state('domcontentloaded', timeout=30000)
                     await self.random_delay(3, 6)
+                    # Handle cookie popup if it reappears
+                    await self.handle_cookie_popup(page)
                     current_page += 1
                 
                 if all_results:
@@ -342,8 +387,8 @@ class StealthScraper:
 # Usage
 async def main():
     scraper = StealthScraper()
-    url = 'https://www.bizi.si/TSMEDIA/A/avtoservis-380/'
-    results = await scraper.scrape_page(url, start_page=35)  # Start from page 35
+    url = 'https://www.bizi.si/TSMEDIA/F/frizerska-dejavnost-1260/'
+    results = await scraper.scrape_page(url, start_page=0)  # Start from page 35
     print(f"Scraping finished with {len(results)} total results")
 
 if __name__ == "__main__":
